@@ -107,6 +107,8 @@ void loop() {
         currentState = WAITING;
         updateLEDs();
         Serial.println("FILLED");
+    }else{
+      delay(4000);
     }
 
   }
