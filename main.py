@@ -7,7 +7,7 @@ import threading
 from dataclasses import dataclass
 
 # ---------------- CONFIG ----------------
-PORT = "COM4"                # <<-- change to your Arduino port, e.g. "/dev/ttyUSB0"
+PORT = "/dev/ttyUSB0"                # <<-- change to your Arduino port, e.g. "/dev/ttyUSB0"
 BAUD = 9600
 
 WAITING_TIME = 10            # seconds (for testing). Set to 10*60 for 10 minutes in production.
