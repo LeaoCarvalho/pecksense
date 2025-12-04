@@ -15,6 +15,7 @@ FEEDING_WAIT_AFTER_CMD = 30  # seconds fallback if Arduino doesn't respond (tuna
 
 TARGET_CLASS = "animal"
 WINDOW_SECONDS = 3
+ERASE_SECONDS = 7
 DETECTION_THRESHOLD = 0.9
 FIRST_IMAGE_MIN_AGE = 5.0    # "first valid image is old enough" requirement
 
@@ -30,7 +31,7 @@ EMPTY = "EMPTY"
 # ---------------- Mock classifier ----------------
 def mock_classify_image(img_bytes: bytes) -> str:
     # 20% chance "animal", 80% "other"
-    return TARGET_CLASS if random.random() < 0.2 else "other"
+    return TARGET_CLASS if random.random() > 0 else "other"
 
 # ---------------- state holder ----------------
 class StateHolder:
@@ -54,6 +55,7 @@ class RollingDetector:
 
     async def push(self, label: str):
         async with self.lock:
+            print(f"adicionou {label}")
             now = time.time()
             self.window.append((now, label))
 
@@ -70,22 +72,31 @@ class RollingDetector:
         """
         async with self.lock:
             now = time.time()
-            cutoff = now - WINDOW_SECONDS
+            cutoff_erase = now - FIRST_IMAGE_MIN_AGE
 
             # purge too-old frames
-            while self.window and self.window[0][0] < cutoff:
+            while self.window and self.window[0][0] < cutoff_erase:
+                print(f"now: {now}")
+                print(f"self.window[0][0]: {self.window[0][0]}")
                 self.window.popleft()
 
             if not self.window:
+                print("vazio")
                 return False
 
-            oldest_ts = self.window[0][0]
-            if (now - oldest_ts) < FIRST_IMAGE_MIN_AGE:
-                return False
+            # oldest_ts = self.window[0][0]
+            # if (now - oldest_ts) < FIRST_IMAGE_MIN_AGE:
+            #     print("imagem muito nova")
+            #     return False
 
-            total = len(self.window)
-            positives = sum(1 for _, lbl in self.window if lbl == TARGET_CLASS)
+            cutoff = now - WINDOW_SECONDS
+            total = sum(1 for time, _ in self.window if time < cutoff)
+            if total <= 0:
+                print("total vazio")
+                return False
+            positives = sum(1 for time, lbl in self.window if lbl == TARGET_CLASS and time < cutoff)
             ratio = positives / total
+            print(f"ratio: {ratio}")
             return ratio >= DETECTION_THRESHOLD
 
     async def size(self) -> int:
@@ -162,6 +173,7 @@ async def handle_image_connection(reader: asyncio.StreamReader, writer: asyncio.
             header = await reader.readexactly(4)
             img_size = int.from_bytes(header, "big")
             img_bytes = await reader.readexactly(img_size)
+            print("Received image")
 
             # classify
             label = mock_classify_image(img_bytes)
@@ -237,6 +249,7 @@ async def main():
                     await state_holder.set(FEEDING)
                     await async_serial_writer(ser, "STATE_FEEDING")
                 else:
+                    print("not detected")
                     # not detected yet: just wait a small tick
                     await asyncio.sleep(0.1)
 
