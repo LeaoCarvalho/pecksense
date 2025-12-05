@@ -7,7 +7,7 @@ import threading
 from dataclasses import dataclass
 
 # ---------------- CONFIG ----------------
-PORT = "/dev/ttyUSB1"                # <<-- change to your Arduino port, e.g. "/dev/ttyUSB0" , "COM3" or "/dev/ttyUSB1"
+PORT = "/dev/ttyUSB0"                # <<-- change to your Arduino port, e.g. "/dev/ttyUSB0" , "COM3" or "/dev/ttyUSB1"
 BAUD = 9600
 
 WAITING_TIME = 10            # seconds (for testing). Set to 10*60 for 10 minutes in production.
@@ -72,7 +72,7 @@ class RollingDetector:
         """
         async with self.lock:
             now = time.time()
-            cutoff_erase = now - FIRST_IMAGE_MIN_AGE
+            cutoff_erase = now - ERASE_SECONDS
 
             # purge too-old frames
             while self.window and self.window[0][0] < cutoff_erase:
@@ -84,10 +84,10 @@ class RollingDetector:
                 print("vazio")
                 return False
 
-            # oldest_ts = self.window[0][0]
-            # if (now - oldest_ts) < FIRST_IMAGE_MIN_AGE:
-            #     print("imagem muito nova")
-            #     return False
+            oldest_ts = self.window[0][0]
+            if (now - oldest_ts) < FIRST_IMAGE_MIN_AGE:
+                print("imagem muito nova")
+                return False
 
             cutoff = now - WINDOW_SECONDS
             total = sum(1 for time, _ in self.window if time < cutoff)
