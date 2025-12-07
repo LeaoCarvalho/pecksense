@@ -36,10 +36,10 @@ try:
         sock.sendall(struct.pack("!I", size) + data)
 
         # Wait 0.5 seconds
-        # time.sleep(0.5)
+        time.sleep(0.5)
 
 except KeyboardInterrupt:
-    pass
+    raise
 
 cap.release()
 sock.close()

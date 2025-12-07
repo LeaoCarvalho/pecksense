@@ -5,6 +5,10 @@ from collections import deque
 import random
 import threading
 from dataclasses import dataclass
+import cv2
+import numpy as np
+import time
+import os
 
 # ---------------- CONFIG ----------------
 PORT = "/dev/ttyUSB0"                # <<-- change to your Arduino port, e.g. "/dev/ttyUSB0" , "COM3" or "/dev/ttyUSB1"
@@ -28,7 +32,81 @@ DETECTING = "DETECTING"
 FEEDING = "FEEDING"
 EMPTY = "EMPTY"
 
-# ---------------- Mock classifier ----------------
+# ---------------- classifier config ----------------
+
+PROTOTXT = "MobileNetSSD_deploy.prototxt"
+MODEL = "MobileNetSSD_deploy.caffemodel"
+CONFIDENCE_THRESHOLD = 0.5
+CLASSES = ["background", "aeroplane", "bicycle", "bird", "boat",
+           "bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
+           "dog", "horse", "motorbike", "person", "pottedplant", "sheep",
+           "sofa", "train", "tvmonitor"]
+
+COLOR_BIRD = (0, 255, 0)   # Verde
+COLOR_OTHER = (0, 0, 255)  # Vermelho
+
+
+# ---------------- classifier ----------------
+
+class VisionSystem:
+    def __init__(self):
+        print("[INFO] Loading model MobileNetSSD...")
+        if not os.path.exists(PROTOTXT) or not os.path.exists(MODEL):
+            raise FileNotFoundError("MobileNet model files not found!")
+        self.net = cv2.dnn.readNetFromCaffe(PROTOTXT, MODEL)
+        self.class_name = "bird"
+
+        time.sleep(1.0) # Waiting for the camera to warm
+
+    def classify_frame(self, frame):
+        """
+        Recebe a rede neural e um frame de vídeo.
+        Processa a imagem, desenha os bounding boxes e retorna:
+        - True: Se encontrou um pássaro.
+        - False: Se não encontrou.
+        Nota: O 'frame' é modificado in-place (desenha direto nele).
+        """
+        # 1. Prepara a imagem para a IA (Blob)
+        h, w = frame.shape[:2]
+        # Resize para 300x300 (padrão MobileNet) e normalização de cores
+        resized_frame = cv2.resize(frame, (300, 300))
+        blob = cv2.dnn.blobFromImage(resized_frame, 0.007843, (300, 300), 127.5)
+        
+        # 2. Executa a detecção
+        self.net.setInput(blob)
+        detections = self.net.forward()
+
+        found_bird = False
+
+        # 3. Analisa os resultados
+        for i in range(detections.shape[2]):
+            confidence = detections[0, 0, i, 2]
+            
+            if confidence > CONFIDENCE_THRESHOLD:
+                idx = int(detections[0, 0, i, 1])
+                class_name = CLASSES[idx]
+                
+                # Calcula coordenadas do quadrado
+                box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+                (startX, startY, endX, endY) = box.astype("int")
+
+                # Formata o texto da etiqueta
+                label = "{}: {:.2f}%".format(class_name, confidence * 100)
+
+                if class_name == self.class_name:
+                    found_bird = True
+                    # Desenha quadrado VERDE (Pássaro)
+                    cv2.rectangle(frame, (startX, startY), (endX, endY), COLOR_BIRD, 2)
+                    y = startY - 15 if startY - 15 > 15 else startY + 15
+                    cv2.putText(frame, label, (startX, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_BIRD, 2)
+                else:
+                    # Desenha quadrado VERMELHO (Outros objetos - opcional para debug)
+                    cv2.rectangle(frame, (startX, startY), (endX, endY), COLOR_OTHER, 2)
+                    y = startY - 15 if startY - 15 > 15 else startY + 15
+                    cv2.putText(frame, label, (startX, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_OTHER, 2)
+
+        return found_bird
+
 def mock_classify_image(img_bytes: bytes) -> str:
     # 20% chance "animal", 80% "other"
     return TARGET_CLASS if random.random() > 0 else "other"
@@ -53,7 +131,7 @@ class RollingDetector:
         self.window = deque()  # deque[(timestamp, label)]
         self.lock = asyncio.Lock()
 
-    async def push(self, label: str):
+    async def push(self, label: bool):
         async with self.lock:
             print(f"adicionou {label}")
             now = time.time()
@@ -66,9 +144,9 @@ class RollingDetector:
     async def evaluate(self) -> bool:
         """
         Returns True only if:
-         - after purging older-than WINDOW_SECONDS,
+         - after purging older-than ERASE_SECONDS,
          - the first (oldest) item in the remaining window is at least FIRST_IMAGE_MIN_AGE seconds old,
-         - and >= DETECTION_THRESHOLD of the remaining items are TARGET_CLASS.
+         - and >= DETECTION_THRESHOLD of the items within WINDOW_SECONDS are True.
         """
         async with self.lock:
             now = time.time()
@@ -76,29 +154,30 @@ class RollingDetector:
 
             # purge too-old frames
             while self.window and self.window[0][0] < cutoff_erase:
-                print(f"now: {now}")
-                print(f"self.window[0][0]: {self.window[0][0]}")
                 self.window.popleft()
 
             if not self.window:
-                print("vazio")
                 return False
 
             oldest_ts = self.window[0][0]
             if (now - oldest_ts) < FIRST_IMAGE_MIN_AGE:
-                print("imagem muito nova")
+                # ainda não temos imagens antigas o suficiente
                 return False
 
             cutoff = now - WINDOW_SECONDS
-            total = sum(1 for time, _ in self.window if time < cutoff)
-            if total <= 0:
-                print("total vazio")
+            # queremos os items com timestamp >= cutoff (ou seja, mais recentes dentro da janela)
+            recent_items = [(ts, lbl) for ts, lbl in self.window if ts >= cutoff]
+
+            total = len(recent_items)
+            if total == 0:
                 return False
-            positives = sum(1 for time, lbl in self.window if lbl == TARGET_CLASS and time < cutoff)
+
+            positives = sum(1 for ts, lbl in recent_items if lbl == True)
             ratio = positives / total
-            print(f"ratio: {ratio}")
+            print(f"[detector] positives={positives} total={total} ratio={ratio:.2f}")
             return ratio >= DETECTION_THRESHOLD
 
+    
     async def size(self) -> int:
         async with self.lock:
             return len(self.window)
@@ -164,28 +243,44 @@ async def wait_for_serial(queue: asyncio.Queue, expected_set: set, timeout: floa
 
 # ---------------- Async image server ----------------
 async def handle_image_connection(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
-                                  detector: RollingDetector, state_holder: StateHolder):
+                                  detector: RollingDetector, state_holder: StateHolder, vision: VisionSystem):
     peer = writer.get_extra_info("peername")
     print(f"[img_server] connection from {peer}")
+
     try:
         while True:
-            # read 4-byte size
+            # ---- RECEBE O FRAME ----
             header = await reader.readexactly(4)
             img_size = int.from_bytes(header, "big")
             img_bytes = await reader.readexactly(img_size)
             print("Received image")
 
-            # classify
-            label = mock_classify_image(img_bytes)
+            # ---- DECODIFICA PARA Numpy (necessário para desenhar e exibir) ----
+            np_data = np.frombuffer(img_bytes, dtype=np.uint8)
+            frame = cv2.imdecode(np_data, cv2.IMREAD_COLOR)
 
-            # only push if current state is DETECTING
+            if frame is None:
+                print("[ERROR] Frame recebido não pode ser decodificado!")
+                continue
+
+            # ---- CLASSIFICA com desenhamento ----
+            # vision.classify_frame modifica o frame desenhando bounding boxes
+            label = vision.classify_frame(frame)
+
+            # ---- MOSTRA AO VIVO (como no seu código exemplo) ----
+            cv2.imshow("Deteccao em Tempo Real (Servidor)", frame)
+            cv2.waitKey(1)
+
+            # ---- EMPILHA PARA A JANELA DESLIZANTE ----
             if await state_holder.get() == DETECTING:
                 await detector.push(label)
 
     except asyncio.IncompleteReadError:
         print(f"[img_server] connection closed by {peer}")
+
     except Exception as e:
         print("[img_server] error:", e)
+
     finally:
         try:
             writer.close()
@@ -193,9 +288,13 @@ async def handle_image_connection(reader: asyncio.StreamReader, writer: asyncio.
         except Exception:
             pass
 
-async def start_image_server(detector: RollingDetector, state_holder: StateHolder):
+        # Necessário evitar travamento da janela OpenCV quando o cliente desconecta
+        cv2.destroyAllWindows()
+
+
+async def start_image_server(detector: RollingDetector, state_holder: StateHolder, vision: VisionSystem):
     server = await asyncio.start_server(
-        lambda r, w: handle_image_connection(r, w, detector, state_holder),
+        lambda r, w: handle_image_connection(r, w, detector, state_holder, vision),
         host=IMAGE_SERVER_HOST,
         port=IMAGE_SERVER_PORT
     )
@@ -223,10 +322,11 @@ async def main():
 
 
     detector = RollingDetector()
+    vision = VisionSystem()
     state_holder = StateHolder(WAITING)
 
     # start image server
-    server_task = asyncio.create_task(start_image_server(detector, state_holder))
+    server_task = asyncio.create_task(start_image_server(detector, state_holder, vision))
 
     print("[main] starting state machine")
     try:
