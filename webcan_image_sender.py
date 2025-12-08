@@ -29,6 +29,9 @@ try:
         if not success:
             continue
 
+        h, w = frame.shape[:2]
+        print("Frame resolution:", w, "x", h)
+
         data = encoded.tobytes()
         size = len(data)
 
@@ -36,7 +39,7 @@ try:
         sock.sendall(struct.pack("!I", size) + data)
 
         # Wait 0.5 seconds
-        time.sleep(0.5)
+        time.sleep(0.05)
 
 except KeyboardInterrupt:
     raise

@@ -9,6 +9,8 @@ import cv2
 import numpy as np
 import time
 import os
+import logging
+
 
 # ---------------- CONFIG ----------------
 PORT = "/dev/ttyUSB0"                # <<-- change to your Arduino port, e.g. "/dev/ttyUSB0" , "COM3" or "/dev/ttyUSB1"
@@ -23,8 +25,14 @@ ERASE_SECONDS = 7
 DETECTION_THRESHOLD = 0.9
 FIRST_IMAGE_MIN_AGE = 5.0    # "first valid image is old enough" requirement
 
-IMAGE_SERVER_HOST = "0.0.0.0"
+IMAGE_SERVER_HOST = "127.0.0.1"
 IMAGE_SERVER_PORT = 9000
+
+logging.basicConfig(
+    filename="pecksense.log",        # log file name
+    level=logging.INFO,        # minimum level to log
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 # ---------------- STATES ----------------
 WAITING = "WAITING"
@@ -116,6 +124,7 @@ class StateHolder:
     def __init__(self, initial_state: str):
         self._state = initial_state
         self._lock = asyncio.Lock()
+        logging.info(initial_state)
 
     async def get(self) -> str:
         async with self._lock:
@@ -124,6 +133,7 @@ class StateHolder:
     async def set(self, new_state: str):
         async with self._lock:
             self._state = new_state
+            logging.info(new_state)
 
 # ---------------- RollingDetector (async-safe) ----------------
 class RollingDetector:
@@ -246,6 +256,7 @@ async def handle_image_connection(reader: asyncio.StreamReader, writer: asyncio.
                                   detector: RollingDetector, state_holder: StateHolder, vision: VisionSystem):
     peer = writer.get_extra_info("peername")
     print(f"[img_server] connection from {peer}")
+    logging.info(f"Conection made with {peer}")
 
     try:
         while True:
@@ -277,9 +288,11 @@ async def handle_image_connection(reader: asyncio.StreamReader, writer: asyncio.
 
     except asyncio.IncompleteReadError:
         print(f"[img_server] connection closed by {peer}")
+        logging.info(f"Conection with {peer} closed")
 
     except Exception as e:
         print("[img_server] error:", e)
+        logging.info(f"error: {e}")
 
     finally:
         try:
@@ -329,6 +342,7 @@ async def main():
     server_task = asyncio.create_task(start_image_server(detector, state_holder, vision))
 
     print("[main] starting state machine")
+    logging.info("Program started")
     try:
         while True:
             state = await state_holder.get()
@@ -412,6 +426,7 @@ async def main():
 
     finally:
         # cleanup
+        logging.info("shuting down")
         stop_event.set()
         t.join(timeout=1.0)
         try:
@@ -421,6 +436,7 @@ async def main():
         server_task.cancel()
         await asyncio.sleep(0.1)
         print("[main] shutdown complete")
+        logging.info("shutdown complete")
 
 
 if __name__ == "__main__":
